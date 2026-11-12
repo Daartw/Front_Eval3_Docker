@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Generar el sitio
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+      - run: mvn -B -q compile exec:java
+        env:
+          BACKEND_USERS_URL: http://localhost:8081
+          BACKEND_PRODUCTS_URL: http://localhost:8082
+      - name: Verificar los archivos generados
+        run: |
+          test -s output/index.html && test -s output/styles.css && test -s output/script.js
+          node --check output/script.js
+          # Los datos del backend no se insertan como HTML y no hay manejadores en línea
+          if grep -n "innerHTML" output/script.js; then echo "script.js usa innerHTML"; exit 1; fi
+          if grep -n "onclick=" output/index.html; then echo "index.html tiene manejadores en línea"; exit 1; fi
+          grep -q "Content-Security-Policy" output/index.html
+      - name: Rechazar URLs de backend inválidas
+        run: |
+          if BACKEND_USERS_URL="javascript:alert(1)" mvn -B -q exec:java; then
+            echo "El generador aceptó una URL inválida"; exit 1
+          fi
+
+  docker:
+    name: Imagen Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker build -t front_eval3 .
+      - name: Probar el contenedor
+        run: |
+          docker run -d --rm --name front -p 8080:80 front_eval3
+          sleep 3
+          curl -fsS -D headers.txt -o /dev/null http://localhost:8080/
+          grep -i "x-content-type-options: nosniff" headers.txt
+          grep -i "x-frame-options: DENY" headers.txt
+          docker stop front
