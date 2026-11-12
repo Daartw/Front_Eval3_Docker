@@ -1,7 +1,10 @@
 package com.eval3.frontend;
 
 import java.io.FileWriter;
+import java.nio.charset.StandardCharsets;
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -10,7 +13,15 @@ public class StaticPageGenerator {
     
     private static final String OUTPUT_DIR = "output";
 
+    /**
+     * Lee la configuración: primero la variable de entorno (útil en Docker y CI)
+     * y, si no existe, el archivo .env local.
+     */
     private static String getEnv(String key, String defaultValue) {
+        String fromEnvironment = System.getenv(key);
+        if (fromEnvironment != null && !fromEnvironment.isBlank()) {
+            return fromEnvironment.trim();
+        }
         Path envPath = Paths.get(".env");
         if (Files.exists(envPath)) {
             try {
@@ -28,6 +39,26 @@ public class StaticPageGenerator {
         }
         return defaultValue;
     }
+
+    /**
+     * Valida que la URL de un backend sea http(s) y devuelve solo su origen
+     * (esquema + host + puerto). Como el valor se inserta en el JavaScript y en la
+     * política CSP generados, se rechaza cualquier cosa que no sea una URL simple.
+     */
+    static String backendOrigin(String key, String rawUrl) {
+        try {
+            URI uri = new URI(rawUrl.trim());
+            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase();
+            String host = uri.getHost();
+            if (!(scheme.equals("http") || scheme.equals("https")) || host == null
+                    || !host.matches("[A-Za-z0-9.\\-]+|\\[[0-9A-Fa-f:.]+\\]") || uri.getUserInfo() != null) {
+                throw new IllegalArgumentException("se esperaba una URL http(s)://host[:puerto]");
+            }
+            return scheme + "://" + host + (uri.getPort() == -1 ? "" : ":" + uri.getPort());
+        } catch (URISyntaxException | IllegalArgumentException e) {
+            throw new IllegalArgumentException(key + " no es una URL válida (" + rawUrl + "): " + e.getMessage());
+        }
+    }
     
     public static void main(String[] args) {
         try {
@@ -37,27 +68,34 @@ public class StaticPageGenerator {
                 Files.createDirectories(outputPath);
             }
             
+            String usersUrl = backendOrigin("BACKEND_USERS_URL", getEnv("BACKEND_USERS_URL", "http://localhost:8081"));
+            String productsUrl = backendOrigin("BACKEND_PRODUCTS_URL", getEnv("BACKEND_PRODUCTS_URL", "http://localhost:8082"));
+            System.out.println("Configurando frontend: Users API -> " + usersUrl + " | Products API -> " + productsUrl);
+
             // Generar archivos
-            generateIndexHtml();
+            generateIndexHtml(usersUrl, productsUrl);
             generateStylesCss();
-            generateScriptJs();
+            generateScriptJs(usersUrl, productsUrl);
             
             System.out.println("Página estática generada exitosamente en el directorio 'output'");
             System.out.println("Abra output/index.html en su navegador para ver la página");
             
-        } catch (IOException e) {
+        } catch (IOException | IllegalArgumentException e) {
             System.err.println("Error generando la página estática: " + e.getMessage());
-            e.printStackTrace();
+            System.exit(1);
         }
     }
     
-    private static void generateIndexHtml() throws IOException {
+    private static void generateIndexHtml(String usersUrl, String productsUrl) throws IOException {
         String html = """
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Política de seguridad de contenido: solo recursos propios y los dos backends configurados -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src {{CONNECT_SRC}}; base-uri 'none'; form-action 'none'">
+    <meta name="referrer" content="no-referrer">
     <title>Gestión de Productos</title>
     <link rel="stylesheet" href="styles.css">
 </head>
@@ -66,8 +104,8 @@ public class StaticPageGenerator {
         <header>
             <h1>Gestión de Productos</h1>
             <nav>
-                <button class="nav-btn active" onclick="showSection('products')">Productos</button>
-                <button class="nav-btn" onclick="showSection('register')">Registro</button>
+                <button class="nav-btn active" data-section="products">Productos</button>
+                <button class="nav-btn" data-section="register">Registro</button>
             </nav>
         </header>
         
@@ -92,19 +130,19 @@ public class StaticPageGenerator {
                 <form id="register-form" class="register-form">
                     <div class="form-group">
                         <label for="username">Nombre de Usuario:</label>
-                        <input type="text" id="username" name="username" required>
+                        <input type="text" id="username" name="username" required minlength="3" maxlength="50" pattern="[A-Za-z0-9_.\\-]+" autocomplete="username">
                     </div>
                     <div class="form-group">
                         <label for="email">Correo Electrónico:</label>
-                        <input type="email" id="email" name="email" required>
+                        <input type="email" id="email" name="email" required maxlength="100" autocomplete="email">
                     </div>
                     <div class="form-group">
                         <label for="password">Contraseña:</label>
-                        <input type="password" id="password" name="password" required>
+                        <input type="password" id="password" name="password" required minlength="8" maxlength="128" autocomplete="new-password">
                     </div>
                     <div class="form-group">
                         <label for="confirm-password">Confirmar Contraseña:</label>
-                        <input type="password" id="confirm-password" name="confirm-password" required>
+                        <input type="password" id="confirm-password" name="confirm-password" required minlength="8" maxlength="128" autocomplete="new-password">
                     </div>
                     <button type="submit" class="submit-btn">Registrarse</button>
                 </form>
@@ -121,8 +159,11 @@ public class StaticPageGenerator {
 </body>
 </html>
 """;
+
+        String connectSrc = usersUrl.equals(productsUrl) ? usersUrl : usersUrl + " " + productsUrl;
+        html = html.replace("{{CONNECT_SRC}}", connectSrc);
         
-        try (FileWriter writer = new FileWriter(OUTPUT_DIR + "/index.html")) {
+        try (FileWriter writer = new FileWriter(OUTPUT_DIR + "/index.html", StandardCharsets.UTF_8)) {
             writer.write(html);
         }
     }
@@ -392,15 +433,12 @@ footer {
 }
 """;
         
-        try (FileWriter writer = new FileWriter(OUTPUT_DIR + "/styles.css")) {
+        try (FileWriter writer = new FileWriter(OUTPUT_DIR + "/styles.css", StandardCharsets.UTF_8)) {
             writer.write(css);
         }
     }
 
-    private static void generateScriptJs() throws IOException {
-        String usersUrl = getEnv("BACKEND_USERS_URL", "http://localhost:8081");
-        String productsUrl = getEnv("BACKEND_PRODUCTS_URL", "http://localhost:8082");
-        System.out.println("Configurando frontend: Users API -> " + usersUrl + " | Products API -> " + productsUrl);
+    private static void generateScriptJs(String usersUrl, String productsUrl) throws IOException {
 
         String js = """
 
@@ -479,12 +517,26 @@ let registeredUsers = JSON.parse(localStorage.getItem('registeredUsers')) || [];
 document.addEventListener('DOMContentLoaded', function() {
     loadProducts();
     setupRegisterForm();
+    document.querySelectorAll('.nav-btn[data-section]').forEach(btn => {
+        btn.addEventListener('click', () => showSection(btn.dataset.section));
+    });
 });
+
+// Crea un elemento con texto plano. Los datos del backend nunca se insertan como HTML,
+// así un nombre o descripción con etiquetas no puede ejecutar código en la página (XSS).
+function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+}
 
 // Cargar productos en la grid (desde el Backend 2)
 function loadProducts() {
     const productsGrid = document.getElementById('products-grid');
-    productsGrid.innerHTML = '<p style="grid-column: 1/-1; text-align: center; color: #666;">Cargando productos...</p>';
+    const loading = el('p', '', 'Cargando productos...');
+    loading.style.cssText = "grid-column: 1/-1; text-align: center; color: #666;";
+    productsGrid.replaceChildren(loading);
     
     fetch('{{BACKEND_PRODUCTS_URL}}/api/products')
         .then(response => {
@@ -494,11 +546,14 @@ function loadProducts() {
             return response.json();
         })
         .then(data => {
-            productsGrid.innerHTML = '';
+            productsGrid.replaceChildren();
             
             // Si la base de datos está vacía, mostramos los de ejemplo
-            const listToRender = (data && data.length > 0) ? data : products;
-            if (data && data.length === 0) {
+            if (!Array.isArray(data)) {
+                throw new Error('Respuesta inesperada del servidor');
+            }
+            const listToRender = data.length > 0 ? data : products;
+            if (data.length === 0) {
                 console.log("La base de datos de productos está vacía. Mostrando productos de ejemplo.");
                 // Agregamos un aviso visual de que son de ejemplo
                 const infoMsg = document.createElement('div');
@@ -514,7 +569,7 @@ function loadProducts() {
         })
         .catch(error => {
             console.warn('Backend 2 (Productos) desconectado. Mostrando datos locales de respaldo:', error);
-            productsGrid.innerHTML = '';
+            productsGrid.replaceChildren();
             
             const infoMsg = document.createElement('div');
             infoMsg.style.cssText = "grid-column: 1/-1; background: #fee2e2; color: #991b1b; padding: 10px; border-radius: 8px; text-align: center; font-size: 0.9em; margin-bottom: 15px;";
@@ -532,13 +587,15 @@ function loadProducts() {
 function createProductCard(product) {
     const card = document.createElement('div');
     card.className = 'product-card';
-    card.innerHTML = `
-        <div class="product-image">${product.icon || '📦'}</div>
-        <h3 class="product-name">${product.name}</h3>
-        <p class="product-description">${product.description || ''}</p>
-        <p class="product-price">$${Number(product.price).toFixed(2)}</p>
-        <p class="product-stock">Stock: ${product.stock} unidades</p>
-    `;
+    const price = Number(product.price);
+    const stock = Number(product.stock);
+    card.append(
+        el('div', 'product-image', String(product.icon || '📦')),
+        el('h3', 'product-name', String(product.name ?? '')),
+        el('p', 'product-description', String(product.description || '')),
+        el('p', 'product-price', '$' + (Number.isFinite(price) ? price.toFixed(2) : '—')),
+        el('p', 'product-stock', 'Stock: ' + (Number.isFinite(stock) ? stock : 0) + ' unidades')
+    );
     return card;
 }
 
@@ -563,8 +620,8 @@ function handleRegister(event) {
         return;
     }
     
-    if (password.length < 6) {
-        showMessage('La contraseña debe tener al menos 6 caracteres', 'error');
+    if (password.length < 8) {
+        showMessage('La contraseña debe tener al menos 8 caracteres', 'error');
         return;
     }
     
@@ -581,7 +638,7 @@ function handleRegister(event) {
         })
     })
     .then(async response => {
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
         if (!response.ok) {
             throw new Error(data.error || 'Error al registrar usuario en el servidor');
         }
@@ -645,7 +702,7 @@ function showSection(sectionName) {
         js = js.replace("{{BACKEND_USERS_URL}}", usersUrl)
                .replace("{{BACKEND_PRODUCTS_URL}}", productsUrl);
         
-        try (FileWriter writer = new FileWriter(OUTPUT_DIR + "/script.js")) {
+        try (FileWriter writer = new FileWriter(OUTPUT_DIR + "/script.js", StandardCharsets.UTF_8)) {
             writer.write(js);
         }
     }
