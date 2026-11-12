@@ -1,66 +1,78 @@
-# Frontend - Gestión de Productos
+# Frontend — Gestión de Productos
 
-Frontend en Java que genera una página estática HTML para gestión de productos.
+[![CI](https://github.com/Daartw/Front_Eval3_Docker/actions/workflows/ci.yml/badge.svg)](https://github.com/Daartw/Front_Eval3_Docker/actions/workflows/ci.yml)
+
+Generador en **Java** que produce un sitio estático (HTML, CSS y JavaScript) servido con **Nginx** en Docker.
+Es el frontend de una aplicación full stack dockerizada:
+
+| Servicio | Repositorio | Puerto |
+|---|---|---|
+| Usuarios | [BackJs_Eval3_Docker](https://github.com/Daartw/BackJs_Eval3_Docker) | 8081 |
+| Productos | [BackPy_Eval3_Docker](https://github.com/Daartw/BackPy_Eval3_Docker) | 8082 |
+| Frontend (este) | `Front_Eval3_Docker` | 80 |
 
 ## Características
 
-- Registro de usuarios
-- Visualización de productos (solo lectura, no se puede comprar)
-- Interfaz moderna y responsiva
-- Almacenamiento local de usuarios registrados (localStorage)
+- Catálogo de productos (solo lectura) cargado desde el servicio de productos, con catálogo de respaldo si no responde.
+- Registro de usuarios contra el servicio de usuarios, con validación en el formulario.
+- Interfaz responsiva sin dependencias externas.
+- Content Security Policy, cabeceras de seguridad en Nginx y salida segura de los datos del backend.
 
 ## Requisitos
 
 - Java 17 o superior
 - Maven 3.6 o superior
 
-## Build
+## Configuración
 
-Para generar la página estática:
+Las URLs de los backends se definen al **generar** el sitio, en este orden de prioridad:
+
+1. Variables de entorno `BACKEND_USERS_URL` y `BACKEND_PRODUCTS_URL`.
+2. Archivo `.env` (ver `.env.example`).
+3. Valores por defecto: `http://localhost:8081` y `http://localhost:8082`.
+
+Deben tener la forma `http(s)://host[:puerto]`.
+
+## Generar y ver el sitio
 
 ```bash
 mvn clean compile exec:java
 ```
 
-Esto generará los archivos estáticos en el directorio `output/`:
-- `index.html` - Página principal
-- `styles.css` - Estilos CSS
-- `script.js` - Funcionalidad JavaScript
+Los archivos quedan en `output/` (`index.html`, `styles.css`, `script.js`). Como la página consulta los
+backends, sírvela con un servidor web en vez de abrir el archivo directamente:
 
-## Ejecutar
-
-Abra el archivo `output/index.html` en su navegador web.
-
-## Estructura del Proyecto
-
-```
-front/
-├── pom.xml                          # Configuración Maven
-├── README.md                        # Este archivo
-├── src/
-│   └── main/
-│       ├── java/
-│       │   └── com/
-│       │       └── eval3/
-│       │           └── frontend/
-│       │               └── StaticPageGenerator.java  # Generador de páginas
-│       └── resources/
-└── output/                          # Directorio generado con archivos estáticos
-    ├── index.html
-    ├── styles.css
-    └── script.js
+```bash
+cd output && python -m http.server 8080      # http://localhost:8080
 ```
 
-## Funcionalidades
+Recuerda autorizar ese origen en `CORS_ORIGINS` de ambos backends.
 
-### Registro de Usuarios
-- Formulario de registro con validación
-- Almacenamiento en localStorage
-- Validación de contraseñas
-- Prevención de duplicados
+Con Docker:
 
-### Visualización de Productos
-- Grid de productos con información detallada
-- 8 productos de ejemplo pre-cargados
-- Diseño responsivo
-- Solo lectura (no se pueden realizar compras)
+```bash
+docker build \
+  --build-arg BACKEND_USERS_URL=http://localhost:8081 \
+  --build-arg BACKEND_PRODUCTS_URL=http://localhost:8082 \
+  -t front_eval3 .
+docker run --rm -p 80:80 front_eval3
+```
+
+## Estructura del proyecto
+
+```
+.
+├── pom.xml                      # Configuración Maven
+├── Dockerfile                   # Construcción en dos etapas (Maven → Nginx)
+├── nginx/default.conf           # Nginx con cabeceras de seguridad
+└── src/main/java/com/eval3/frontend/
+    └── StaticPageGenerator.java # Generador del sitio
+```
+
+## Seguridad
+
+Ver [SECURITY.md](SECURITY.md) para las medidas implementadas y cómo reportar una vulnerabilidad.
+
+## Autor
+
+Daniel Araya Rebolledo — [@Daartw](https://github.com/Daartw)
