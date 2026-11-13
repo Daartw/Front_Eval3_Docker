@@ -10,6 +10,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Solo Java LTS (21, 25...). Las versiones intermedias tienen soporte de ~6 meses.
+      - dependency-name: maven
+        versions: ["3.9-eclipse-temurin-26", "3.9-eclipse-temurin-27", "3.9-eclipse-temurin-28"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
